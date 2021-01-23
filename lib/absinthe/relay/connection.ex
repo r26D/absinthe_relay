@@ -3,10 +3,10 @@ defmodule Absinthe.Relay.Connection.Options do
 
   @typedoc false
   @type t :: %{
-          optional(:after) => nil | integer,
-          optional(:before) => nil | integer,
-          optional(:first) => nil | integer,
-          optional(:last) => nil | integer
+          optional(:after) => nil | Connection.cursor(),
+          optional(:before) => nil | Connection.cursor(),
+          optional(:first) => nil | pos_integer(),
+          optional(:last) => nil | pos_integer()
         }
 
   defstruct after: nil, before: nil, first: nil, last: nil
@@ -496,7 +496,9 @@ defmodule Absinthe.Relay.Connection do
               {:ok, max(value - limit, 0), limit}
 
             {value, _} ->
-              {:ok, max(value - limit, 0), limit}
+              start_offset = max(value - limit, 0)
+              limit = if start_offset == 0, do: value, else: limit
+              {:ok, start_offset, limit}
           end
       end
     end
@@ -564,7 +566,9 @@ defmodule Absinthe.Relay.Connection do
     offset = offset || 0
     first = offset_to_cursor(offset)
     edge = build_edge(item, first)
-    {edges, last} = do_build_cursors(items, offset + 1, [edge], first)
+    {edges, _} = do_build_cursors(items, offset + 1, [edge], first)
+    first = edges |> List.first() |> get_in([:cursor])
+    last = edges |> List.last() |> get_in([:cursor])
     {edges, first, last}
   end
 
@@ -579,7 +583,7 @@ defmodule Absinthe.Relay.Connection do
   defp build_edge({item, args}, cursor) do
     args
     |> Enum.flat_map(fn
-      {key, _} when key in [:cursor, :node] ->
+      {key, _} when key in [:node] ->
         Logger.warn("Ignoring additional #{key} provided on edge (overriding is not allowed)")
         []
 

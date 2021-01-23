@@ -156,6 +156,10 @@ defmodule Absinthe.Relay.ConnectionTest do
     end
 
     connection(:favorite_pets_bare, node_type: :pet)
+    connection(:non_null_except_node, node_type: :person, non_null: true)
+    connection(:non_null, node_type: non_null(:person), non_null: true)
+    connection(:non_null_edges, node_type: non_null(:person), non_null_edges: true)
+    connection(:non_null_edge, node_type: non_null(:person), non_null_edge: true)
 
     connection :favorite_pets, node_type: :pet do
       field :fav_twice_edges_count, :integer do
@@ -188,13 +192,31 @@ defmodule Absinthe.Relay.ConnectionTest do
       end
 
       @desc "The favorite pets for a person"
-      connection field :favorite_pets, connection: :favorite_pets do
+      connection field :favorite_pets, node_type: :pet, connection: :favorite_pets do
         resolve fn resolve_args, %{source: person} ->
           Absinthe.Relay.Connection.from_list(
             Enum.map(person.favorite_pets, &Map.get(@pets, &1)),
             resolve_args
           )
         end
+      end
+
+      connection field :non_null_except_node,
+                   node_type: :person,
+                   connection: :non_null_except_node do
+        resolve fn _, args -> Absinthe.Relay.Connection.from_list(@people, args) end
+      end
+
+      connection field :non_null, node_type: :person, connection: :non_null do
+        resolve fn _, args -> Absinthe.Relay.Connection.from_list(@people, args) end
+      end
+
+      connection field :non_null_edge, node_type: :person, connection: :non_null_edge do
+        resolve fn _, args -> Absinthe.Relay.Connection.from_list(@people, args) end
+      end
+
+      connection field :non_null_edges, node_type: :person, connection: :non_null_edges do
+        resolve fn _, args -> Absinthe.Relay.Connection.from_list(@people, args) end
       end
     end
 
@@ -556,20 +578,85 @@ defmodule Absinthe.Relay.ConnectionTest do
 
   describe "when provided with a cursor as an edge arg" do
     setup do
-      [record: {%{name: "Dan"}, %{role: "contributor", cursor: :bad}}]
+      [
+        records: [
+          {%{name: "Dan"}, %{role: "contributor", cursor: "start_cursor"}},
+          {%{name: "Bob"}, %{role: "contributor", cursor: "end_cursor"}}
+        ]
+      ]
     end
 
-    test "it will ignore the additional cursor", %{record: record} do
-      capture_log(fn ->
-        {:ok, %{edges: [%{cursor: cursor} | _]}} = Connection.from_list([record], %{first: 1})
-        assert cursor == "YXJyYXljb25uZWN0aW9uOjA="
-      end)
+    test "it will override the default cursor", %{records: records} do
+      assert(
+        {:ok,
+         %{
+           edges: [%{cursor: "start_cursor"}, %{cursor: "end_cursor"}],
+           page_info: %{
+             start_cursor: "start_cursor",
+             end_cursor: "end_cursor"
+           }
+         }} = Connection.from_list(records, %{first: 2})
+      )
     end
+  end
 
-    test "it will log a warning", %{record: record} do
-      assert capture_log(fn ->
-               Connection.from_list([record], %{first: 1})
-             end) =~ "Ignoring additional cursor provided on edge"
+  describe "when defined with non_null: true, but node isn't non_null" do
+    test "it will define edges and edge as non_null, but node is nullable" do
+      connection =
+        CustomConnectionAndEdgeFieldsSchema.__absinthe_type__(:non_null_except_node_connection)
+
+      edge = CustomConnectionAndEdgeFieldsSchema.__absinthe_type__(:non_null_except_node_edge)
+
+      assert %Absinthe.Type.NonNull{
+               of_type: %Absinthe.Type.List{
+                 of_type: %Absinthe.Type.NonNull{of_type: :non_null_except_node_edge}
+               }
+             } == connection.fields.edges.type
+
+      refute Absinthe.Type.non_null?(edge.fields.node.type)
+    end
+  end
+
+  describe "when defined with non_null: true" do
+    test "it will define edges and edge as non_null" do
+      connection = CustomConnectionAndEdgeFieldsSchema.__absinthe_type__(:non_null_connection)
+      edge = CustomConnectionAndEdgeFieldsSchema.__absinthe_type__(:non_null_edge)
+
+      assert %Absinthe.Type.NonNull{
+               of_type: %Absinthe.Type.List{
+                 of_type: %Absinthe.Type.NonNull{of_type: :non_null_edge}
+               }
+             } == connection.fields.edges.type
+
+      assert %Absinthe.Type.NonNull{of_type: :person} == edge.fields.node.type
+    end
+  end
+
+  describe "when defined with non_null_edge: true" do
+    test "it will define edge as non_null" do
+      connection =
+        CustomConnectionAndEdgeFieldsSchema.__absinthe_type__(:non_null_edge_connection)
+
+      edge = CustomConnectionAndEdgeFieldsSchema.__absinthe_type__(:non_null_edge_edge)
+
+      assert %Absinthe.Type.List{of_type: %Absinthe.Type.NonNull{of_type: :non_null_edge_edge}} ==
+               connection.fields.edges.type
+
+      assert %Absinthe.Type.NonNull{of_type: :person} == edge.fields.node.type
+    end
+  end
+
+  describe "when defined with non_null_edges: true" do
+    test "it will define edges as non_null" do
+      connection =
+        CustomConnectionAndEdgeFieldsSchema.__absinthe_type__(:non_null_edges_connection)
+
+      edge = CustomConnectionAndEdgeFieldsSchema.__absinthe_type__(:non_null_edges_edge)
+
+      assert %Absinthe.Type.NonNull{of_type: %Absinthe.Type.List{of_type: :non_null_edges_edge}} ==
+               connection.fields.edges.type
+
+      assert %Absinthe.Type.NonNull{of_type: :person} == edge.fields.node.type
     end
   end
 
@@ -588,7 +675,7 @@ defmodule Absinthe.Relay.ConnectionTest do
                {:ok, 5, 5}
 
       assert Connection.offset_and_limit_for_query(%{last: 10, before: @offset_cursor_1}, []) ==
-               {:ok, 0, 10}
+               {:ok, 0, 1}
 
       assert Connection.offset_and_limit_for_query(%{last: 5, before: @offset_cursor_2}, []) ==
                {:ok, 0, 5}
@@ -599,6 +686,9 @@ defmodule Absinthe.Relay.ConnectionTest do
                []
              ) ==
                {:ok, 0, 5}
+
+      assert Connection.offset_and_limit_for_query(%{last: 3, before: @offset_cursor_2}, []) ==
+               {:ok, 2, 3}
     end
 
     test "without a cursor" do
